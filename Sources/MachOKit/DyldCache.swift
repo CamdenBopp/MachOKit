@@ -83,8 +83,9 @@ public class DyldCache: DyldCacheRepresentable, _DyldCacheFileRepresentable {
             for: fileHandle
         )
 
-        // read header
-        self.header = try! fileHandle.read(
+        // read header: a file shorter than a cache header is not one, and
+        // `MachOFile.cache` probes every file it backs with this init
+        self.header = try fileHandle.read(
             offset: 0
         )
 

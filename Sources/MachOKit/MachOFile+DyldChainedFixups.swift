@@ -171,12 +171,9 @@ extension MachOFile.DyldChainedFixups {
         in machO: MachOFile
     ) -> [DyldChainedFixupPointer] {
         let pages = pages(of: startsInSegment)
-        guard pages.count > 0, startsInSegment.page_size > 0 else { return [] }
-
-        let pagesFileSlice = try! machO.fileHandle.fileSlice(
-            offset: machO.headerStartOffset + numericCast(startsInSegment.segment_offset),
-            length: pages.count * numericCast(startsInSegment.page_size)
-        )
+        guard pages.count > 0, startsInSegment.page_size > 0,
+              let bytes = chainBytes(of: startsInSegment, pageCount: pages.count, in: machO),
+              let pagesFileSlice = bytes.fileSlice else { return [] }
 
         var pointers: [DyldChainedFixupPointer] = []
 
@@ -192,13 +189,13 @@ extension MachOFile.DyldChainedFixups {
                     offsetInPage = pages[overflowIndex].offset & ~UInt16(DYLD_CHAINED_PTR_START_LAST)
                     let pageContentStart: Int = index * numericCast(startsInSegment.page_size)
                     let chainOffset = pageContentStart + numericCast(offsetInPage)
-                    walkChain(offset: chainOffset, pagesFileSlice: pagesFileSlice, of: startsInSegment, pointers: &pointers)
+                    walkChain(offset: chainOffset, pagesFileSlice: pagesFileSlice, fileOffset: bytes.fileOffset, of: startsInSegment, pointers: &pointers)
                     overflowIndex += 1
                 }
             } else {
                 let pageContentStart: Int = index * numericCast(startsInSegment.page_size)
                 let chainOffset = pageContentStart + numericCast(offsetInPage)
-                walkChain(offset: chainOffset, pagesFileSlice: pagesFileSlice, of: startsInSegment, pointers: &pointers)
+                walkChain(offset: chainOffset, pagesFileSlice: pagesFileSlice, fileOffset: bytes.fileOffset, of: startsInSegment, pointers: &pointers)
             }
         }
 
@@ -208,6 +205,7 @@ extension MachOFile.DyldChainedFixups {
     private func walkChain(
         offset: Int,
         pagesFileSlice: FileSlice,
+        fileOffset: Int,
         of startsInSegment: DyldChainedStartsInSegment,
         pointers: inout [DyldChainedFixupPointer]
     ) {
@@ -216,7 +214,7 @@ extension MachOFile.DyldChainedFixups {
         }
         _ = DyldChainedFixupPointer.walkChain(
             startOffset: offset,
-            pointerOffsetBias: numericCast(startsInSegment.segment_offset),
+            pointerOffsetBias: fileOffset,
             pointerFormat: pointerFormat,
             pointers: &pointers
         ) { offset in
@@ -232,26 +230,32 @@ extension MachOFile.DyldChainedFixups {
 extension MachOFile.DyldChainedFixups {
     public func pointer(for offset: UInt64, in machO: MachOFile) -> DyldChainedFixupPointer? {
         guard let startsInImage = startsInImage else { return nil }
-        guard let startsInSegment = startsInSegments(of: startsInImage)
-            .first(where: {
-                let segmentSize = UInt64($0.page_size) * UInt64($0.page_count)
-                return $0.segment_offset <= offset && offset - $0.segment_offset < segmentSize
-            }) else {
+        // `offset` counts in the file, like the offsets of the pointers this
+        // answers with, so a segment is matched by where its chain's bytes
+        // lie there: `segment_offset` counts in memory.
+        var found: (DyldChainedStartsInSegment, ChainBytes, [DyldChainedPage])?
+        for candidate in startsInSegments(of: startsInImage) {
+            let pages = pages(of: candidate)
+            guard !pages.isEmpty, candidate.page_size > 0,
+                  let bytes = chainBytes(of: candidate, pageCount: pages.count, in: machO),
+                  offset >= UInt64(bytes.fileOffset),
+                  offset - UInt64(bytes.fileOffset) < UInt64(bytes.length) else {
+                continue
+            }
+            found = (candidate, bytes, pages)
+            break
+        }
+        guard let (startsInSegment, bytes, pages) = found,
+              let pagesFileSlice = bytes.fileSlice else {
             return nil
         }
 
-        let pages = pages(of: startsInSegment)
         let pageSize: Int = numericCast(startsInSegment.page_size)
         let pageIndex: Int = numericCast(
-            (offset - startsInSegment.segment_offset) / UInt64(pageSize)
+            (offset - UInt64(bytes.fileOffset)) / UInt64(pageSize)
         )
         let page = pages[pageIndex]
         guard !page.isNone else { return nil }
-
-        let pagesFileSlice = try! machO.fileHandle.fileSlice(
-            offset: machO.headerStartOffset + numericCast(startsInSegment.segment_offset),
-            length: pages.count * pageSize
-        )
 
         let pageContentStart = pageIndex * pageSize
         var offsetInPage = page.offset
@@ -267,6 +271,7 @@ extension MachOFile.DyldChainedFixups {
                     for: offset,
                     chainOffset: chainOffset,
                     pagesFileSlice: pagesFileSlice,
+                    fileOffset: bytes.fileOffset,
                     of: startsInSegment
                 ) {
                     return pointer
@@ -280,6 +285,7 @@ extension MachOFile.DyldChainedFixups {
                 for: offset,
                 chainOffset: chainOffset,
                 pagesFileSlice: pagesFileSlice,
+                fileOffset: bytes.fileOffset,
                 of: startsInSegment
             )
         }
@@ -290,6 +296,7 @@ extension MachOFile.DyldChainedFixups {
         for targetOffset: UInt64,
         chainOffset: Int,
         pagesFileSlice: FileSlice,
+        fileOffset: Int,
         of startsInSegment: DyldChainedStartsInSegment
     ) -> DyldChainedFixupPointer? {
         guard let pointerFormat = startsInSegment.pointerFormat else {
@@ -311,7 +318,7 @@ extension MachOFile.DyldChainedFixups {
                 continue
             }
 
-            let pointerOffset = numericCast(startsInSegment.segment_offset) + chainOffset
+            let pointerOffset = fileOffset + chainOffset
 
             if pointerOffset == targetOffset {
                 return DyldChainedFixupPointer(
@@ -332,6 +339,57 @@ extension MachOFile.DyldChainedFixups {
 }
 
 extension MachOFile.DyldChainedFixups {
+    /// Where the pages of one segment's chains lie in the file.
+    private struct ChainBytes {
+        /// Offset from the Mach-O header of the segment's first page. Every
+        /// `DyldChainedFixupPointer.offset` counts from the same place.
+        let fileOffset: Int
+        /// How many of the pages' bytes the file holds.
+        let length: Int
+        let fileSlice: FileSlice?
+    }
+
+    /// `segment_offset` is an offset in memory from the image's load address,
+    /// and a segment can lie elsewhere in the file: one that ends in zero
+    /// fill takes up less of the file than of memory, so those after it are
+    /// stored closer to the header than they load. The file offset is the
+    /// matching segment's, and `page_count` can cover more than the segment
+    /// stores, the zero fill included.
+    ///
+    /// `nil` when no segment, or more than one, starts at `segment_offset`:
+    /// nothing can be said of a chain whose pages are not known. In a dyld
+    /// cache image a segment's `fileOffset` counts from the cache, so offsets
+    /// from the header are kept as they were.
+    private func chainBytes(
+        of startsInSegment: DyldChainedStartsInSegment,
+        pageCount: Int,
+        in machO: MachOFile
+    ) -> ChainBytes? {
+        let pagesLength = pageCount * numericCast(startsInSegment.page_size)
+        var fileOffset: Int = numericCast(startsInSegment.segment_offset)
+        var length = pagesLength
+        if !machO.isLoadedFromDyldCache {
+            guard let loadAddress = machO.preferredLoadAddress else { return nil }
+            let segments = machO.segments.filter {
+                let (offset, overflow) = UInt64($0.virtualMemoryAddress)
+                    .subtractingReportingOverflow(loadAddress)
+                return !overflow && $0.virtualMemorySize > 0
+                    && offset == startsInSegment.segment_offset
+            }
+            guard segments.count == 1, let segment = segments.first else { return nil }
+            fileOffset = segment.fileOffset
+            length = min(pagesLength, segment.fileSize)
+        }
+        return .init(
+            fileOffset: fileOffset,
+            length: length,
+            fileSlice: try? machO.fileHandle.fileSlice(
+                offset: machO.headerStartOffset + fileOffset,
+                length: length
+            )
+        )
+    }
+
     @inline(__always)
     private func _fixupInfo(
         at offset: Int,

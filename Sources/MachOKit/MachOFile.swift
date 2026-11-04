@@ -948,6 +948,12 @@ extension MachOFile {
     ///   may reside in different subcache files. In such cases, this function returns `nil` if the address
     ///   does not belong to the current subcache file.
     ///
+    /// - Note:
+    ///   A rebase target is an offset from the load address, not an address: a value below `__TEXT`
+    ///   counts from `__TEXT`, whether or not the image has a `__PAGEZERO` there. An address in the
+    ///   part of a segment the file does not store, past its `filesize`, has no file offset: the
+    ///   offset it would have had belongs to whatever is stored after the segment.
+    ///
     /// - Parameter rawVMAddr: The raw virtual memory address to convert.
     /// - Returns: The file offset relative to the start of the file that contains the Mach-O header,
     ///   or `nil` if the address does not exist within this file.
@@ -968,15 +974,21 @@ extension MachOFile {
         of vmaddr: UInt64,
         in segments: Segments
     ) -> UInt64? where Segments.Element: SegmentCommandProtocol {
+        var address = vmaddr
+        if let text = segments.first(where: { $0.segmentName == SEG_TEXT }) {
+            let loadAddress = UInt64(text.virtualMemoryAddress)
+            if vmaddr < loadAddress {
+                let (rebased, overflow) = vmaddr.addingReportingOverflow(loadAddress)
+                if overflow { return nil }
+                address = rebased
+            }
+        }
         for segment in segments {
             let segmentVMAddr = UInt64(segment.virtualMemoryAddress)
-            if segmentVMAddr <= vmaddr,
-               vmaddr < segmentVMAddr + UInt64(segment.virtualMemorySize) {
-                return vmaddr + UInt64(segment.fileOffset) - segmentVMAddr
-            }
-            if vmaddr < segmentVMAddr,
-               segment.segmentName == SEG_TEXT {
-                return vmaddr
+            if segmentVMAddr <= address,
+               address - segmentVMAddr < UInt64(segment.virtualMemorySize) {
+                guard address - segmentVMAddr < UInt64(segment.fileSize) else { return nil }
+                return address - segmentVMAddr + UInt64(segment.fileOffset)
             }
         }
         return nil

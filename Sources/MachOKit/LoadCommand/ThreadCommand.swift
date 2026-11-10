@@ -191,7 +191,7 @@ extension ThreadCommand {
                 return nil
             }
             let state = data.withUnsafeBytes {
-                $0.load(as: ARMThreadState.self)
+                $0.loadUnaligned(as: ARMThreadState.self)
             }
             return .arm(state)
 
@@ -200,7 +200,7 @@ extension ThreadCommand {
                 return nil
             }
             let state = data.withUnsafeBytes {
-                $0.load(as: ARM64ThreadState.self)
+                $0.loadUnaligned(as: ARM64ThreadState.self)
             }
             return .arm64(state)
         case .i386:
@@ -208,7 +208,7 @@ extension ThreadCommand {
                 return nil
             }
             let state = data.withUnsafeBytes {
-                $0.load(as: i386ThreadState.self)
+                $0.loadUnaligned(as: i386ThreadState.self)
             }
             return .i386(state)
         case .x86_64:
@@ -216,7 +216,7 @@ extension ThreadCommand {
                 return nil
             }
             let state = data.withUnsafeBytes {
-                $0.load(as: x86_64ThreadState.self)
+                $0.loadUnaligned(as: x86_64ThreadState.self)
             }
             return .x86_64(state)
         default: break

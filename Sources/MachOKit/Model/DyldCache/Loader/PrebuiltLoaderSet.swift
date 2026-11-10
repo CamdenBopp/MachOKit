@@ -236,7 +236,7 @@ extension PrebuiltLoaderSet {
                 offset: numericCast(offset),
                 length: PrebuiltLoader.layoutSize
             ).withUnsafeBytes {
-                let loader = $0.load(as: PrebuiltLoader.Layout.self)
+                let loader = $0.loadUnaligned(as: PrebuiltLoader.Layout.self)
                 return .init(
                     layout: loader,
                     address: address + numericCast(_offset)
@@ -267,7 +267,7 @@ extension PrebuiltLoaderSet {
                 offset: numericCast(offset),
                 length: PrebuiltLoader_Pre1165_3.layoutSize
             ).withUnsafeBytes {
-                let loader = $0.load(as: PrebuiltLoader_Pre1165_3.Layout.self)
+                let loader = $0.loadUnaligned(as: PrebuiltLoader_Pre1165_3.Layout.self)
                 return .init(
                     layout: loader,
                     address: address + numericCast(_offset)

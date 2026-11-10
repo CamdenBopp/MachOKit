@@ -130,7 +130,7 @@ extension FileHandle {
         )
         if let swapHandler { swapHandler(&data) }
         return data.withUnsafeBytes {
-            $0.load(as: Element.self)
+            $0.loadUnaligned(as: Element.self)
         }
     }
 
@@ -149,7 +149,7 @@ extension FileHandle {
         )
         if let swapHandler { swapHandler(&data) }
         return data.withUnsafeBytes {
-            $0.load(as: Element.self)
+            $0.loadUnaligned(as: Element.self)
         }
     }
 
@@ -172,7 +172,7 @@ extension FileHandle {
         )
         if let swapHandler { swapHandler(&data) }
         return data.withUnsafeBytes {
-            $0.load(as: Element.self)
+            $0.loadUnaligned(as: Element.self)
         }
     }
 
@@ -191,7 +191,7 @@ extension FileHandle {
         )
         if let swapHandler { swapHandler(&data) }
         return data.withUnsafeBytes {
-            $0.load(as: Element.self)
+            $0.loadUnaligned(as: Element.self)
         }
     }
 }
